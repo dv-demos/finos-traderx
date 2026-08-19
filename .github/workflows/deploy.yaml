@@ -102,8 +102,13 @@ jobs:
         with:
           # Upstream sets sourceCompatibility = 21. Newer JDKs build fine but produce Gradle
           # native-access warnings, so the toolchain is pinned to the declared level.
-          java-version: "21"
-          distribution: temurin
+          #
+          # Azul Zulu rather than Temurin to satisfy the allow-azul-zulu-jdk policy in the
+          # publish-artifact scan. The patch version is pinned rather than floating on 21 because
+          # the comparable policy in dv-demos/develocity-provenance-governor-policies matches an
+          # explicit version list, and the newest Zulu 21 releases are not on it.
+          java-version: "21.0.8"
+          distribution: zulu
 
       - name: Setup Gradle with Develocity injection
         uses: gradle/actions/setup-gradle@v4

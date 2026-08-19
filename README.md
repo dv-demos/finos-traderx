@@ -160,9 +160,10 @@ that overstates its coverage is worse than one that admits its shape.
 
   | Policy | Why it fails |
   |---|---|
-  | `allow-azul-zulu-jdk` | The workflow pins Temurin 21, not Azul Zulu. |
   | `approved-dependency-repos` | Upstream declares `mavenCentral()`, so dependencies do not resolve through Artifactory. |
   | `allow-gradle-and-maven-build-tools` | Not diagnosed. |
+
+  `allow-azul-zulu-jdk` was addressed by building on Azul Zulu 21.0.8 rather than Temurin.
 
   These are inferences from the policy names plus the shapes in
   [develocity-provenance-governor-policies](https://github.com/dv-demos/develocity-provenance-governor-policies);
