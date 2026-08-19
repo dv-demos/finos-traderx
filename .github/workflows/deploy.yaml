@@ -127,6 +127,11 @@ jobs:
         run: ./gradlew $GRADLE_ARGS -I "$GITHUB_WORKSPACE/gradle/develocity-scan-tagging.init.gradle" build
         env:
           DEVELOCITY_ACCESS_KEY: ${{ secrets.DV_ACCESS_KEY }}
+          # Upstream declares no Java toolchain, only sourceCompatibility, so the Build Scan records
+          # no toolchain for a JavaToolchain policy to match on. The init script declares one, using
+          # the JDK installed above. If it cannot be resolved the build fails loudly.
+          TRADERX_JAVA_TOOLCHAIN_VERSION: "21"
+          TRADERX_JAVA_TOOLCHAIN_VENDOR: AZUL
 
       # ---- Image publication. Skipped for database-specfirst, which has no Dockerfile. ----
 

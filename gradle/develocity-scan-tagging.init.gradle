@@ -51,6 +51,36 @@ def tagIfPossible = {
 gradle.settingsEvaluated { tagIfPossible() }
 gradle.projectsLoaded { tagIfPossible() }
 
+/*
+ * Declare an explicit Java toolchain when asked to.
+ *
+ * The TraderX builds set `sourceCompatibility` and nothing else, so they have no Java toolchain and
+ * simply compile with whatever JVM Gradle happens to be running on. A Build Scan therefore records
+ * no toolchain, and a Provenance Governor JavaToolchain policy with a `must-match` strategy has
+ * nothing to match against — it stays unsatisfied no matter which JDK the workflow installs.
+ * Declaring the toolchain here makes the JDK an explicit, attestable property of the build.
+ *
+ * Driven entirely by environment variables so that it only takes effect where it is asked for, and
+ * a local build without them behaves exactly as upstream does.
+ */
+def toolchainVersion = System.getenv('TRADERX_JAVA_TOOLCHAIN_VERSION')
+def toolchainVendor = System.getenv('TRADERX_JAVA_TOOLCHAIN_VENDOR')
+
+if (toolchainVersion) {
+    gradle.beforeProject { project ->
+        project.pluginManager.withPlugin('java-base') {
+            project.extensions.getByName('java').toolchain { spec ->
+                spec.languageVersion = org.gradle.jvm.toolchain.JavaLanguageVersion.of(toolchainVersion)
+                if (toolchainVendor) {
+                    // Resolved reflectively so an unknown vendor name fails loudly here rather than
+                    // silently leaving the toolchain unconstrained.
+                    spec.vendor = org.gradle.jvm.toolchain.JvmVendorSpec.getDeclaredField(toolchainVendor).get(null)
+                }
+            }
+        }
+    }
+}
+
 /**
  * Attaches CI provenance custom values, tags and links to the given Build Scan configuration.
  *
