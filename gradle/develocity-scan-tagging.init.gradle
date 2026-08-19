@@ -1,0 +1,94 @@
+/*
+ * Develocity Build Scan tagging for the FINOS TraderX demo builds.
+ *
+ * This repository builds an unmodified checkout of finos/traderX, so there is nowhere upstream to
+ * put the equivalent of a `develocity-custom-user-data.groovy` file. This init script is applied
+ * from outside with `-I` instead, and it attaches the custom values that let the Develocity
+ * Provenance Governor find the Build Scan belonging to a particular matrix leg.
+ *
+ * The important value is `CI build`, which combines the CI run identity with the Gradle root
+ * project name. TraderX is five independent Gradle builds, all published to the same Develocity
+ * instance from the same workflow run, so run id alone does not identify a single scan. The
+ * workflow queries for this value with `value:"CI build=<run-id>-<run-attempt>/<project>"`.
+ *
+ * The script is deliberately defensive: the Develocity plugin is not declared by any TraderX
+ * build. It is injected at runtime by `gradle/actions/setup-gradle`, and init script ordering
+ * relative to that injection is not something we want to depend on. Registering the callback with
+ * `pluginManager.withPlugin` from `beforeSettings` works whether the plugin is applied before or
+ * after this script runs. When no Develocity plugin is present at all — for example a local run
+ * without injection — nothing happens and the build is unaffected.
+ */
+
+gradle.beforeSettings { settings ->
+    settings.pluginManager.withPlugin('com.gradle.develocity') {
+        tagBuildScan(settings, settings.extensions.getByName('develocity').buildScan)
+    }
+    // Fallback for the pre-Develocity plugin id, in case the injected plugin version is older.
+    settings.pluginManager.withPlugin('com.gradle.enterprise') {
+        tagBuildScan(settings, settings.extensions.getByName('gradleEnterprise').buildScan)
+    }
+}
+
+/**
+ * Attaches CI provenance custom values, tags and links to the given Build Scan configuration.
+ *
+ * Values that depend on the Gradle root project name are added from a `projectsLoaded` callback,
+ * because the root project name is not yet known while the settings are still being configured.
+ *
+ * @param settings the settings of the build being tagged
+ * @param buildScan the Build Scan extension of the injected Develocity plugin
+ */
+void tagBuildScan(def settings, def buildScan) {
+    def env = System.getenv()
+
+    def ciId = env['CI_ID']
+    def runId = env['GITHUB_RUN_ID']
+    def runAttempt = env['GITHUB_RUN_ATTEMPT']
+    def repository = env['GITHUB_REPOSITORY']
+    def serverUrl = env['GITHUB_SERVER_URL'] ?: 'https://github.com'
+    def workflow = env['GITHUB_WORKFLOW']
+    def upstreamSha = env['TRADERX_SHA']
+
+    if (env['CI'] == null) {
+        buildScan.tag 'LOCAL'
+    } else {
+        buildScan.tag 'CI'
+        buildScan.tag 'GitHub Actions'
+    }
+
+    // Mirrors the `CI run` value the reference demo sets from Maven, so the same
+    // `value:"CI run=<run-id>"` query shape keeps working across both repositories.
+    if (runId) {
+        buildScan.value 'CI run', runId
+        if (repository) {
+            buildScan.link 'GitHub Actions run', "${serverUrl}/${repository}/actions/runs/${runId}"
+        }
+    }
+    if (runAttempt) {
+        buildScan.value 'CI run attempt', runAttempt
+    }
+    if (workflow) {
+        buildScan.value 'CI workflow', workflow
+    }
+    if (repository) {
+        buildScan.value 'GitHub repository', repository
+    }
+
+    // The build being scanned is an external checkout, so record what was actually built rather
+    // than letting the scan's own VCS detection describe this wrapper repository.
+    if (upstreamSha) {
+        buildScan.value 'TraderX commit', upstreamSha
+        buildScan.link 'TraderX source', "https://github.com/finos/traderX/tree/${upstreamSha}"
+    }
+
+    settings.gradle.projectsLoaded { gradle ->
+        def project = gradle.rootProject.name
+        buildScan.tag project
+        buildScan.value 'TraderX project', project
+        if (ciId) {
+            // Unique per matrix leg. This is the value the Provenance Governor publish step
+            // queries on, and it is what makes one scan resolvable per published image.
+            buildScan.value 'CI build', "${ciId}/${project}"
+        }
+    }
+}

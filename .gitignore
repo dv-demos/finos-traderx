@@ -1,0 +1,8 @@
+# The upstream checkout. The workflow clones finos/traderX into the workspace at run time, and
+# it is convenient to do the same locally when reproducing a build. It must never be committed —
+# this repository deliberately contains no application source.
+/traderX/
+
+# Gradle output, in case a build is run against a checkout inside this directory.
+.gradle/
+build/

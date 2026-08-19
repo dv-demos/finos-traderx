@@ -1,0 +1,231 @@
+name: Java CI - Build & Publish (FINOS TraderX)
+
+# Builds the Java services of FINOS TraderX from an unmodified, SHA-pinned checkout, publishes a
+# Develocity Build Scan per service, pushes an OCI image per service to Artifactory, publishes a
+# Develocity Provenance Governor attestation linking image to scan, and runs the `publish-artifact`
+# policy gate against the result.
+#
+# This repository contains no application source. Everything is driven from the outside: the
+# upstream checkout is read-only, Build Scans come from runtime plugin injection, and scan tagging
+# comes from `gradle/develocity-scan-tagging.init.gradle` applied with `-I`.
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      relocate_tests:
+        description: >-
+          Move src/main/test/java to src/test/java so the upstream tests actually run.
+          Upstream ships them in the wrong directory, where Gradle never sees them.
+        type: choice
+        default: "true"
+        options: [ "true", "false" ]
+
+env:
+  TRADERX_REPO: https://github.com/finos/traderX.git
+  # Pinned to a known-good commit on finos/traderX main. All five Gradle builds are green here.
+  TRADERX_SHA: a8c9b46c0c9e8f3c688ab41ea77648bcb8c32170
+  REGISTRY: develocitytia.jfrog.io
+  DOCKER_REPO: docker-trial
+  DEVELOCITY_URL: https://develocity-field.gradle.com
+  DPG_URL: https://develocity-provenance-governor-field.gradle.com
+  # Used to make Build Scan values and Docker tags unique per run, exactly as the reference demo does.
+  CI_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+  RELOCATE_TESTS: ${{ github.event_name == 'workflow_dispatch' && inputs.relocate_tests || 'true' }}
+  GRADLE_ARGS: --no-daemon --stacktrace
+
+jobs:
+  build:
+    name: ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read  # This is required for actions/checkout
+      id-token: write # This is required for the OIDC token
+
+    strategy:
+      # TraderX is five disconnected Gradle builds. One failing service should not hide the others.
+      fail-fast: false
+      matrix:
+        include:
+          - project: account-service-specfirst
+            publish-image: true
+            relocate-tests: true
+          - project: position-service-specfirst
+            publish-image: true
+            relocate-tests: true
+          # Relocation is off here on purpose. This project's only test is a @SpringBootTest whose
+          # context load opens a JPA connection to a live H2 server at localhost:18082, so it fails
+          # outside a running TraderX stack. Enabling it would mean standing up database-specfirst
+          # as a service, which is beyond what this build-and-attest demo is doing.
+          - project: trade-processor-specfirst
+            publish-image: true
+            relocate-tests: false
+          - project: trade-service-specfirst
+            publish-image: true
+            relocate-tests: true
+          # No Dockerfile upstream: this one repackages H2 into a fat jar. Build only, no image,
+          # and therefore no attestation and no policy gate. It also has no src/ at all.
+          - project: database-specfirst
+            publish-image: false
+            relocate-tests: false
+
+    steps:
+      - name: Checkout demo wrapper
+        uses: actions/checkout@v7
+
+      - name: Checkout FINOS TraderX (pinned, unmodified)
+        run: |
+          git clone --filter=blob:none "$TRADERX_REPO" traderX
+          git -C traderX checkout --detach "$TRADERX_SHA"
+          git -C traderX rev-parse HEAD
+
+      # Upstream ships all four test classes under src/main/test/java, which is not a source set
+      # Gradle knows about, so `:test` reports NO-SOURCE and no tests run at all. This moves them
+      # into place. It is a deliberate, visible fixup applied to the checkout inside CI - it is not
+      # a change to finos/traderX, and it is the only edit this workflow makes to the source tree.
+      # See the matrix above for why one project opts out.
+      - name: Relocate misplaced tests into src/test/java
+        if: env.RELOCATE_TESTS == 'true' && matrix.relocate-tests
+        working-directory: traderX/templates/${{ matrix.project }}
+        run: |
+          if [ -d src/main/test/java ]; then
+            mkdir -p src/test
+            git mv src/main/test/java src/test/java
+            echo "Relocated src/main/test/java -> src/test/java"
+          else
+            echo "No src/main/test/java in ${{ matrix.project }}; nothing to relocate."
+          fi
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          # Upstream sets sourceCompatibility = 21. Newer JDKs build fine but produce Gradle
+          # native-access warnings, so the toolchain is pinned to the declared level.
+          java-version: "21"
+          distribution: temurin
+
+      - name: Setup Gradle with Develocity injection
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # TraderX declares no Develocity plugin and cannot be modified, so the plugin is injected
+          # into the build at runtime. This is what produces the Build Scans.
+          develocity-injection-enabled: true
+          develocity-url: ${{ env.DEVELOCITY_URL }}
+          develocity-access-key: ${{ secrets.DV_ACCESS_KEY }}
+
+      - name: Build with Gradle
+        working-directory: traderX/templates/${{ matrix.project }}
+        run: ./gradlew $GRADLE_ARGS -I "$GITHUB_WORKSPACE/gradle/develocity-scan-tagging.init.gradle" build
+        env:
+          DEVELOCITY_ACCESS_KEY: ${{ secrets.DV_ACCESS_KEY }}
+
+      # ---- Image publication. Skipped for database-specfirst, which has no Dockerfile. ----
+
+      - name: Setup JFrog CLI (OIDC)
+        if: matrix.publish-image
+        id: jfrog
+        uses: jfrog/setup-jfrog-cli@v5
+        env:
+          JF_URL: https://develocitytia.jfrog.io
+        with:
+          oidc-provider-name: github
+          disable-job-summary: true
+
+      - name: Setup Docker Buildx
+        if: matrix.publish-image
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Artifactory
+        if: matrix.publish-image
+        run: echo "${{ steps.jfrog.outputs.oidc-token }}" | docker login "$REGISTRY" --username "${{ steps.jfrog.outputs.oidc-user }}" --password-stdin
+
+      - name: Build and push image
+        if: matrix.publish-image
+        id: image
+        working-directory: traderX/templates/${{ matrix.project }}
+        run: |
+          set -euo pipefail
+
+          # `./gradlew build` leaves both the Spring Boot jar and a `-plain` jar in build/libs, and
+          # the upstream Dockerfile does `COPY build/libs/*.jar app.jar`, which fails on more than
+          # one match. Drop the plain jar rather than touching the Dockerfile.
+          rm -f build/libs/*-plain.jar
+
+          jar=$(ls build/libs/*.jar)
+          base=$(basename "$jar" .jar)
+          version="${base##*-}"
+
+          name="${{ matrix.project }}"
+          tag="${version}-${CI_ID}"
+          ref="${REGISTRY}/${DOCKER_REPO}/${name}:${tag}"
+
+          # Use the plain Dockerfile. Dockerfile.compose, where it exists upstream, runs Gradle
+          # inside the image build, which would hide the build from Develocity entirely.
+          docker buildx build \
+            --file Dockerfile \
+            --tag "$ref" \
+            --push \
+            --metadata-file "${RUNNER_TEMP}/image-metadata.json" \
+            .
+
+          # The reference demo gets the digest out of Maven via a custom-user-data script. There is
+          # no equivalent hook in an unmodified TraderX build, so it comes from buildx instead.
+          digest=$(jq -er '."containerimage.digest"' "${RUNNER_TEMP}/image-metadata.json")
+          # The Provenance Governor actions and the pull URL both want the bare hex digest.
+          digest="${digest#sha256:}"
+
+          {
+            echo "name=${name}"
+            echo "tag=${tag}"
+            echo "digest=${digest}"
+            echo "ref=${ref}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish attestations
+        if: matrix.publish-image
+        uses: gradle/develocity-provenance-governor-actions/publish@governance/bdemers/factconnector-github-workflow-run
+        with:
+          attestation-publisher-url: ${{ env.DPG_URL }}
+          # `CI build` is set by gradle/develocity-scan-tagging.init.gradle and is unique per matrix
+          # leg, so this resolves to exactly the scan for this service in this run.
+          build-scan-queries: 'value:"CI build=${{ env.CI_ID }}/${{ matrix.project }}"'
+          annotations: |
+            github.repository.owner=${{ github.repository_owner }}
+            github.repository.name=${{ github.event.repository.name }}
+            github.run.id=${{ github.run_id }}
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-version: ${{ steps.image.outputs.tag }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          subject-type: oci
+          subject-repository-url: develocitytia.jfrog.io/docker-trial
+
+      - name: Verify Image
+        if: matrix.publish-image
+        id: policy
+        uses: gradle/develocity-provenance-governor-actions/enforce@main
+        # Left non-blocking on purpose, as in the reference demo, so a failing gate is visible in
+        # the run without stopping the demo.
+        continue-on-error: true
+        with:
+          policy-evaluator-url: ${{ env.DPG_URL }}
+          subject-type: oci
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-version: ${{ steps.image.outputs.tag }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          subject-repository-url: develocitytia.jfrog.io/docker-trial
+          policy-scan: publish-artifact
+
+      - name: Output OCI Pull URL to Summary
+        if: matrix.publish-image
+        run: |
+          echo "## OCI Image Pull Information" >> $GITHUB_STEP_SUMMARY
+          echo "\`docker pull ${{ steps.image.outputs.ref }}@sha256:${{ steps.image.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Policy \`publish-artifact\`: **${{ steps.policy.outcome }}**" >> $GITHUB_STEP_SUMMARY
+
+      - name: Summarize build-only project
+        if: ${{ !matrix.publish-image }}
+        run: |
+          echo "## ${{ matrix.project }}" >> $GITHUB_STEP_SUMMARY
+          echo "Built from FINOS TraderX \`${TRADERX_SHA}\`. No Dockerfile upstream, so no image, attestation or policy gate for this project." >> $GITHUB_STEP_SUMMARY
