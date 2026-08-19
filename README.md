@@ -158,12 +158,21 @@ that overstates its coverage is worse than one that admits its shape.
   without failing the build. As of the last run, `publish-artifact` evaluates to `UNSATISFIED` on
   three policies:
 
-  | Policy | Why it fails |
+  | Policy | Status |
   |---|---|
-  | `approved-dependency-repos` | Upstream declares `mavenCentral()`, so dependencies do not resolve through Artifactory. |
-  | `allow-gradle-and-maven-build-tools` | Not diagnosed. |
+  | `allow-azul-zulu-jdk` | Fails on Azul Zulu 21.0.8. The reference demo passes this policy on Azul Zulu 17.0.19, so the policy is satisfiable — its allowed version list appears not to include a 21.x release. TraderX requires Java 21, so it cannot drop to 17 to match. |
+  | `allow-gradle-and-maven-build-tools` | Fails on Gradle 8.14.5. The reference demo passes it with Maven, so this too looks like a version allow-list that does not yet cover the build tool this project uses. |
+  | `approved-dependency-repos` | Fails because upstream declares `mavenCentral()` rather than resolving through Artifactory. **The reference demo also fails this one**, so it is unsatisfied for both demos. |
 
-  `allow-azul-zulu-jdk` was addressed by building on Azul Zulu 21.0.8 rather than Temurin.
+  The evidence for the first two is comparative rather than direct: the instance's policy definitions
+  and the published attestation facts both require authentication to read, so the allowed values
+  cannot be inspected from here. What is established is that the reference workflow fails only
+  `approved-dependency-repos` while this one fails all three, and that the difference tracks the JDK
+  version and the build tool.
+
+  If so, clearing them is a change to the policy data on the Provenance Governor instance — adding a
+  Zulu 21.x release and Gradle 8.14.5 to the respective allow-lists — not a change to this workflow.
+  A gate that visibly catches real differences is arguably the better demo either way.
 
   These are inferences from the policy names plus the shapes in
   [develocity-provenance-governor-policies](https://github.com/dv-demos/develocity-provenance-governor-policies);
