@@ -113,6 +113,9 @@ jobs:
           develocity-injection-enabled: true
           develocity-url: ${{ env.DEVELOCITY_URL }}
           develocity-access-key: ${{ secrets.DV_ACCESS_KEY }}
+          # Required. This input has no default, and without it the injection init script silently
+          # skips applying the plugin - the build succeeds and no Build Scan is ever published.
+          develocity-plugin-version: "4.5.0"
 
       - name: Build with Gradle
         working-directory: traderX/templates/${{ matrix.project }}

@@ -13,32 +13,51 @@
  *
  * The script is deliberately defensive: the Develocity plugin is not declared by any TraderX
  * build. It is injected at runtime by `gradle/actions/setup-gradle`, and init script ordering
- * relative to that injection is not something we want to depend on. Registering the callback with
- * `pluginManager.withPlugin` from `beforeSettings` works whether the plugin is applied before or
- * after this script runs. When no Develocity plugin is present at all — for example a local run
- * without injection — nothing happens and the build is unaffected.
+ * relative to that injection is not something we want to depend on.
+ *
+ * Note that we look the extension up by name rather than reacting to `pluginManager.withPlugin`.
+ * The injection applies the plugin with `pluginManager.apply(Class)`, loading the class from its
+ * own init script classloader. Gradle does still resolve a plugin id for it, so an id-keyed
+ * `withPlugin('com.gradle.develocity')` callback does fire — but that depends on both how the
+ * injection chooses to apply the plugin and on Gradle's class-to-id resolution, neither of which
+ * is part of any contract we control. Checking for the extension at two points that both run
+ * after the plugin has been applied relies on neither. When no Develocity plugin is present at
+ * all — for example a local run without injection — nothing happens and the build is unaffected.
  */
 
+def tagged = false
+def settingsRef = null
+
 gradle.beforeSettings { settings ->
-    settings.pluginManager.withPlugin('com.gradle.develocity') {
-        tagBuildScan(settings, settings.extensions.getByName('develocity').buildScan)
-    }
-    // Fallback for the pre-Develocity plugin id, in case the injected plugin version is older.
-    settings.pluginManager.withPlugin('com.gradle.enterprise') {
-        tagBuildScan(settings, settings.extensions.getByName('gradleEnterprise').buildScan)
-    }
+    settingsRef = settings
 }
+
+def tagIfPossible = {
+    if (tagged || settingsRef == null) {
+        return
+    }
+    // `develocity` is the modern extension; `gradleEnterprise` covers an older injected plugin.
+    def extension = settingsRef.extensions.findByName('develocity')
+            ?: settingsRef.extensions.findByName('gradleEnterprise')
+    if (extension == null) {
+        return
+    }
+    tagged = true
+    tagBuildScan(settingsRef.rootProject.name, extension.buildScan)
+}
+
+// The injection applies the plugin while the settings are being evaluated. Whichever init script
+// runs first, one of these two callbacks fires after the plugin is in place.
+gradle.settingsEvaluated { tagIfPossible() }
+gradle.projectsLoaded { tagIfPossible() }
 
 /**
  * Attaches CI provenance custom values, tags and links to the given Build Scan configuration.
  *
- * Values that depend on the Gradle root project name are added from a `projectsLoaded` callback,
- * because the root project name is not yet known while the settings are still being configured.
- *
- * @param settings the settings of the build being tagged
+ * @param projectName the Gradle root project name, used to make the scan uniquely queryable
  * @param buildScan the Build Scan extension of the injected Develocity plugin
  */
-void tagBuildScan(def settings, def buildScan) {
+void tagBuildScan(String projectName, def buildScan) {
     def env = System.getenv()
 
     def ciId = env['CI_ID']
@@ -81,14 +100,11 @@ void tagBuildScan(def settings, def buildScan) {
         buildScan.link 'TraderX source', "https://github.com/finos/traderX/tree/${upstreamSha}"
     }
 
-    settings.gradle.projectsLoaded { gradle ->
-        def project = gradle.rootProject.name
-        buildScan.tag project
-        buildScan.value 'TraderX project', project
-        if (ciId) {
-            // Unique per matrix leg. This is the value the Provenance Governor publish step
-            // queries on, and it is what makes one scan resolvable per published image.
-            buildScan.value 'CI build', "${ciId}/${project}"
-        }
+    buildScan.tag projectName
+    buildScan.value 'TraderX project', projectName
+    if (ciId) {
+        // Unique per matrix leg. This is the value the Provenance Governor publish step queries
+        // on, and it is what makes one scan resolvable per published image.
+        buildScan.value 'CI build', "${ciId}/${projectName}"
     }
 }
