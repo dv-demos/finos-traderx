@@ -101,6 +101,22 @@ The job runs with `permissions: { contents: read, id-token: write }`.
 - The Provenance Governor `publish` and `enforce` actions authenticate with the GitHub Actions
   token by default, so no username/password is configured here.
 
+**Repository visibility**
+
+The repository must be publicly readable. On receiving a publish request carrying the `github.*`
+annotations, the Provenance Governor calls back to `api.github.com` server-side to enrich the
+attestation with the workflow run:
+
+```
+GET https://api.github.com/repos/<owner>/<repo>/actions/runs/<run-id>
+```
+
+It has no credentials for this repository, so against a private repo that call returns `404` and
+publishing fails with `500 External Service Failure`. GitHub returns `404` rather than `403` for
+resources the caller cannot see, which makes this look like a missing workflow run rather than a
+permissions problem. Either keep the repository public, or arrange for the Provenance Governor to
+have a GitHub App installation with read access to it.
+
 **Endpoints**
 
 | Service | URL |
@@ -137,8 +153,23 @@ that overstates its coverage is worse than one that admits its shape.
   Build Scans per run rather than one.
 - **`database-specfirst` produces no image.** It has no Dockerfile upstream, so it gets no
   attestation and no policy gate. It is built to prove it still compiles, and nothing more.
-- **The policy gate is non-blocking.** `continue-on-error: true` is kept on the `enforce` step, as
-  in the reference demo, so a failing policy is visible in the run summary without failing the
-  build.
+- **The policy gate is non-blocking, and it currently fails.** `continue-on-error: true` is kept on
+  the `enforce` step, as in the reference demo, so a failing policy is visible in the run summary
+  without failing the build. As of the last run, `publish-artifact` evaluates to `UNSATISFIED` on
+  three policies:
+
+  | Policy | Why it fails |
+  |---|---|
+  | `allow-azul-zulu-jdk` | The workflow pins Temurin 21, not Azul Zulu. |
+  | `approved-dependency-repos` | Upstream declares `mavenCentral()`, so dependencies do not resolve through Artifactory. |
+  | `allow-gradle-and-maven-build-tools` | Not diagnosed. |
+
+  These are inferences from the policy names plus the shapes in
+  [develocity-provenance-governor-policies](https://github.com/dv-demos/develocity-provenance-governor-policies);
+  the live instance's policy set is named differently from that example repo and cannot be read
+  from here, so treat the reasons above as unconfirmed. The first two look fixable — a Zulu
+  toolchain, and repository substitution via the init script — but doing so would mean the demo no
+  longer builds TraderX the way TraderX builds itself. A gate that visibly catches real differences
+  is arguably the better demo.
 - **The image tag is unique per run**, not per source revision: `<version>-<run-id>-<run-attempt>`.
   Re-running the workflow on the same upstream SHA produces a new tag and a new attestation.
