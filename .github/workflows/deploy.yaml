@@ -28,9 +28,9 @@ env:
   TRADERX_SHA: a8c9b46c0c9e8f3c688ab41ea77648bcb8c32170
   # The upstream branch TRADERX_SHA is pinned on. CCUD derives `Git branch` from
   # GITHUB_REF_NAME when it runs on GitHub Actions, and that is this wrapper repository's ref,
-  # not the traderX checkout the build actually runs in. Overriding it on the build step below
-  # keeps `Git branch` consistent with `Git repository` and `Git commit id`, both of which come
-  # from that checkout.
+  # not the traderX checkout the build actually runs in. The build step below exports it over
+  # the top so that `Git branch` stays consistent with `Git repository` and `Git commit id`,
+  # both of which come from that checkout.
   TRADERX_BRANCH: main
   REGISTRY: develocitytia.jfrog.io
   DOCKER_REPO: docker-trial
@@ -123,7 +123,13 @@ jobs:
 
       - name: Build with Gradle
         working-directory: traderX/templates/${{ matrix.project }}
-        run: ./gradlew $GRADLE_ARGS -I "$GITHUB_WORKSPACE/gradle/develocity-scan-tagging.init.gradle" build
+        run: |
+          # Exported here rather than in the `env:` block below: GitHub ignores attempts to
+          # override a GITHUB_* default variable through a step's `env:` map, so setting it there
+          # silently does nothing. See TRADERX_BRANCH at the top of this file for why it is set.
+          export GITHUB_REF_NAME="$TRADERX_BRANCH"
+          echo "Attributing Build Scans to $TRADERX_REPO @ $GITHUB_REF_NAME ($TRADERX_SHA)"
+          ./gradlew $GRADLE_ARGS -I "$GITHUB_WORKSPACE/gradle/develocity-scan-tagging.init.gradle" build
         env:
           DEVELOCITY_ACCESS_KEY: ${{ secrets.DV_ACCESS_KEY }}
           # Upstream declares no Java toolchain, only sourceCompatibility, so the Build Scan records
@@ -139,8 +145,6 @@ jobs:
           # finos/traderX. Redirecting the source set leaves the checkout pristine.
           # See the matrix above for why one project opts out.
           TRADERX_RELOCATE_TESTS: ${{ env.RELOCATE_TESTS == 'true' && matrix.relocate-tests }}
-          # See TRADERX_BRANCH above.
-          GITHUB_REF_NAME: ${{ env.TRADERX_BRANCH }}
 
       # ---- Image publication. Skipped for database-specfirst, which has no Dockerfile. ----
 
