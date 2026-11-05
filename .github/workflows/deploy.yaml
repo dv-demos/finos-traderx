@@ -121,6 +121,16 @@ jobs:
           # Required. This input has no default, and without it the injection init script silently
           # skips applying the plugin - the build succeeds and no Build Scan is ever published.
           develocity-plugin-version: "4.5.0"
+          # CCUD supplies the conventional Git and CI custom values - `Git repository`,
+          # `Git commit id`, `Git branch`, `Git status`, `CI provider` - that downstream
+          # consumers of this instance key on. Without it the only metadata on these scans
+          # is what develocity-scan-tagging.init.gradle invents, which uses its own key
+          # names and so is invisible to anything expecting the CCUD conventions.
+          #
+          # Note the git context here is the pinned finos/traderX clone the build runs in,
+          # not this wrapper repo, so `Git repository` reads as finos/traderX for all five
+          # services and `Git branch` is empty (the checkout is detached at TRADERX_SHA).
+          develocity-ccud-plugin-version: "2.8.0"
 
       - name: Build with Gradle
         working-directory: traderX/templates/${{ matrix.project }}
