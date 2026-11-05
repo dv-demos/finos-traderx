@@ -132,10 +132,11 @@ that overstates its coverage is worse than one that admits its shape.
 
 - **Upstream runs no tests.** All four test classes are committed to `src/main/test/java`, which is
   not a source set Gradle recognises. On a bare checkout `:test` is `NO-SOURCE` and
-  `build/test-results/` is empty. This workflow moves them to `src/test/java` after checkout so
-  they actually run — a visible, deliberate fixup step, not an upstream change. Set the
-  `relocate_tests` input to `false` on a manual run to see the untouched behaviour, in which case
-  **no tests execute at all** and any test-related signal in a Build Scan is absent.
+  `build/test-results/` is empty. The scan-tagging init script adds that directory to the test
+  source set so they actually run — a visible, deliberate fixup, not an upstream change, and one
+  that leaves the checkout itself untouched. Set the `relocate_tests` input to `false` on a manual
+  run to see the untouched behaviour, in which case **no tests execute at all** and any
+  test-related signal in a Build Scan is absent.
 - **Even relocated, the coverage is one test per service, and one of them cannot run.** Each
   service has exactly one `@SpringBootTest` context-load test. Three of them
   (`account-service`, `position-service`, `trade-service`) pass standalone and are relocated.

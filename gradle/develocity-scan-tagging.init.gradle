@@ -81,6 +81,29 @@ if (toolchainVersion) {
     }
 }
 
+/*
+ * Add the misplaced upstream test directory to the test source set when asked to.
+ *
+ * TraderX commits its test classes to `src/main/test/java`, which is not a source set Gradle
+ * recognises, so on a bare checkout `:test` is NO-SOURCE and nothing runs. Pointing the test
+ * source set at that directory makes them compile and run without touching the checkout, which
+ * keeps `Git status` empty and the scans free of a `Dirty` tag that would otherwise describe our
+ * own fixup rather than the upstream tree.
+ *
+ * Driven by an environment variable for the same reason as the toolchain above: a local build
+ * without it behaves exactly as upstream does.
+ */
+if (System.getenv('TRADERX_RELOCATE_TESTS') == 'true') {
+    gradle.beforeProject { project ->
+        project.pluginManager.withPlugin('java') {
+            def misplaced = project.file('src/main/test/java')
+            if (misplaced.directory) {
+                project.extensions.getByName('sourceSets').getByName('test').java.srcDir(misplaced)
+            }
+        }
+    }
+}
+
 /**
  * Attaches CI provenance custom values, tags and links to the given Build Scan configuration.
  *
