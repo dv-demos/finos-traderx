@@ -26,6 +26,12 @@ env:
   TRADERX_REPO: https://github.com/finos/traderX.git
   # Pinned to a known-good commit on finos/traderX main. All five Gradle builds are green here.
   TRADERX_SHA: a8c9b46c0c9e8f3c688ab41ea77648bcb8c32170
+  # The upstream branch TRADERX_SHA is pinned on. CCUD derives `Git branch` from
+  # GITHUB_REF_NAME when it runs on GitHub Actions, and that is this wrapper repository's ref,
+  # not the traderX checkout the build actually runs in. The build step below exports it over
+  # the top so that `Git branch` stays consistent with `Git repository` and `Git commit id`,
+  # both of which come from that checkout.
+  TRADERX_BRANCH: main
   REGISTRY: develocitytia.jfrog.io
   DOCKER_REPO: docker-trial
   DEVELOCITY_URL: https://develocity-field.gradle.com
@@ -80,23 +86,6 @@ jobs:
           git -C traderX checkout --detach "$TRADERX_SHA"
           git -C traderX rev-parse HEAD
 
-      # Upstream ships all four test classes under src/main/test/java, which is not a source set
-      # Gradle knows about, so `:test` reports NO-SOURCE and no tests run at all. This moves them
-      # into place. It is a deliberate, visible fixup applied to the checkout inside CI - it is not
-      # a change to finos/traderX, and it is the only edit this workflow makes to the source tree.
-      # See the matrix above for why one project opts out.
-      - name: Relocate misplaced tests into src/test/java
-        if: env.RELOCATE_TESTS == 'true' && matrix.relocate-tests
-        working-directory: traderX/templates/${{ matrix.project }}
-        run: |
-          if [ -d src/main/test/java ]; then
-            mkdir -p src/test
-            git mv src/main/test/java src/test/java
-            echo "Relocated src/main/test/java -> src/test/java"
-          else
-            echo "No src/main/test/java in ${{ matrix.project }}; nothing to relocate."
-          fi
-
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
@@ -134,7 +123,13 @@ jobs:
 
       - name: Build with Gradle
         working-directory: traderX/templates/${{ matrix.project }}
-        run: ./gradlew $GRADLE_ARGS -I "$GITHUB_WORKSPACE/gradle/develocity-scan-tagging.init.gradle" build
+        run: |
+          # Exported here rather than in the `env:` block below: GitHub ignores attempts to
+          # override a GITHUB_* default variable through a step's `env:` map, so setting it there
+          # silently does nothing. See TRADERX_BRANCH at the top of this file for why it is set.
+          export GITHUB_REF_NAME="$TRADERX_BRANCH"
+          echo "Attributing Build Scans to $TRADERX_REPO @ $GITHUB_REF_NAME ($TRADERX_SHA)"
+          ./gradlew $GRADLE_ARGS -I "$GITHUB_WORKSPACE/gradle/develocity-scan-tagging.init.gradle" build
         env:
           DEVELOCITY_ACCESS_KEY: ${{ secrets.DV_ACCESS_KEY }}
           # Upstream declares no Java toolchain, only sourceCompatibility, so the Build Scan records
@@ -142,6 +137,14 @@ jobs:
           # the JDK installed above. If it cannot be resolved the build fails loudly.
           TRADERX_JAVA_TOOLCHAIN_VERSION: "21"
           TRADERX_JAVA_TOOLCHAIN_VENDOR: AZUL
+          # Upstream ships all four test classes under src/main/test/java, which is not a source
+          # set Gradle knows about, so `:test` reports NO-SOURCE and no tests run at all. The init
+          # script adds that directory to the test source set when this is true. It used to be a
+          # `git mv` step, which worked but dirtied the checkout: every scan then carried a
+          # `Git status` value and a `Dirty` tag describing our own fixup rather than the state of
+          # finos/traderX. Redirecting the source set leaves the checkout pristine.
+          # See the matrix above for why one project opts out.
+          TRADERX_RELOCATE_TESTS: ${{ env.RELOCATE_TESTS == 'true' && matrix.relocate-tests }}
 
       # ---- Image publication. Skipped for database-specfirst, which has no Dockerfile. ----
 
